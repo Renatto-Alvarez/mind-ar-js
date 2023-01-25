@@ -1,20 +1,16 @@
-import { Detector } from './detector/detector.js';
-import { buildImageList, buildTrackingImageList } from './image-list.js';
-import { build as hierarchicalClusteringBuild } from './matching/hierarchical-clustering.js';
-import * as msgpack from '@msgpack/msgpack';
-import * as tf from '@tensorflow/tfjs';
-import { createCanvas } from 'canvas'
-import { extract } from './tracker/extract.js';
-//import CompilerWorker  from "./compiler.worker.js?worker&inline";
-
+const Worker = require("./compiler.worker.js");
+const { Detector } = require('./detector/detector.js');
+const { buildImageList, buildTrackingImageList } = require('./image-list.js');
+const { build: hierarchicalClusteringBuild } = require('./matching/hierarchical-clustering.js');
+const msgpack = require('@msgpack/msgpack');
+const tf = require('@tensorflow/tfjs');
 // TODO: better compression method. now grey image saved in pixels, which could be larger than original image
 
 const CURRENT_VERSION = 2;
 
 class Compiler {
-  constructor(avoidWorker = false) {
+  constructor() {
     this.data = null;
-    this.avoidWorker = avoidWorker
   }
 
   // input html Images
@@ -23,7 +19,9 @@ class Compiler {
       const targetImages = [];
       for (let i = 0; i < images.length; i++) {
         const img = images[i];
-        const processCanvas = createCanvas(img.width, img.height);
+        const processCanvas = document.createElement('canvas');
+        processCanvas.width = img.width;
+        processCanvas.height = img.height;
         const processContext = processCanvas.getContext('2d');
         processContext.drawImage(img, 0, 0, img.width, img.height);
         const processData = processContext.getImageData(0, 0, img.width, img.height);
@@ -65,36 +63,15 @@ class Compiler {
       // compute tracking data with worker: 50% progress
       const compileTrack = () => {
         return new Promise((resolve, reject) => {
-          if (this.avoidWorker) {
-            const percentPerImage = 50.0 / targetImages.length;
-            let percent = 0.0;
-            const list = [];
-            for (let i = 0; i < targetImages.length; i++) {
-              const targetImage = targetImages[i];
-              const imageList = buildTrackingImageList(targetImage);
-              const percentPerAction = percentPerImage / imageList.length;
-
-              //console.log("compiling tracking...", i);
-              const trackingData = _extractTrackingFeatures(imageList, (index) => {
-                //console.log("done tracking", i, index);
-                percent += percentPerAction;
-                progressCallback(50+percent);
-              });
-              list.push(trackingData);
+          const worker = new Worker();
+          worker.onmessage = (e) => {
+            if (e.data.type === 'progress') {
+              progressCallback(50 + e.data.percent);
+            } else if (e.data.type === 'compileDone') {
+              resolve(e.data.list);
             }
-            resolve(list);
-          } else {
-            const worker = new Worker(new URL('./compiler.worker.js', import.meta.url));
-	    //const worker = new CompilerWorker();
-            worker.onmessage = (e) => {
-              if (e.data.type === 'progress') {
-                progressCallback(50 + e.data.percent);
-              } else if (e.data.type === 'compileDone') {
-                resolve(e.data.list);
-              }
-            };
-            worker.postMessage({ type: 'compile', targetImages });
-          }
+          };
+          worker.postMessage({ type: 'compile', targetImages });
         });
       }
 
@@ -182,26 +159,6 @@ const _extractMatchingFeatures = async (imageList, doneCallback) => {
   return keyframes;
 }
 
-export {
+module.exports = {
   Compiler
-}
-
-const _extractTrackingFeatures = (imageList, doneCallback) => {
-  const featureSets = [];
-  for (let i = 0; i < imageList.length; i++) {
-    const image = imageList[i];
-    const points = extract(image);
-
-    const featureSet = {
-      data: image.data,
-      scale: image.scale,
-      width: image.width,
-      height: image.height,
-      points,
-    };
-    featureSets.push(featureSet);
-
-    doneCallback(i);
-  }
-  return featureSets;
 }
